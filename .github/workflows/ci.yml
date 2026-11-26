@@ -10,6 +10,20 @@ permissions:
 jobs:
   api:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.7-bookworm@sha256:e742a2668255221388004f3a42b6150a2103f5054ab3a4a93ae9e4f01e551c35
+        env:
+          POSTGRES_USER: cloud_test
+          POSTGRES_DB: cloud_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U cloud_test -d cloud_test"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -18,6 +32,10 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
+      - name: Test OAuth and memos with PostgreSQL
+        env:
+          TEST_DATABASE_URL: postgresql://cloud_test@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/cloud_test?sslmode=disable
+        run: cargo test --locked oauth_sessions_and_memos_postgres -- --ignored
       - name: Audit Rust dependencies
         run: |
           cargo install cargo-audit --version 0.23.0 --locked
@@ -47,6 +65,8 @@ jobs:
   images:
     needs: [api, web]
     runs-on: ubuntu-latest
+    env:
+      DOCKER_DEFAULT_PLATFORM: linux/amd64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -56,6 +76,15 @@ jobs:
           printf 'LOCAL_DB_PASSWORD=%s\n' "$(openssl rand -hex 24)" > .env
           docker compose build
           docker compose up -d --wait
+      - name: Verify running image architectures
+        run: |
+          for service in db api web; do
+            container=$(docker compose ps --quiet "$service")
+            image=$(docker inspect --format '{{.Image}}' "$container")
+            platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")
+            printf '%s %s\n' "$service" "$platform"
+            test "$platform" = linux/amd64
+          done
       - name: Verify readiness and database outage
         run: |
           curl -fsS --retry 12 --retry-all-errors --retry-delay 2 http://127.0.0.1:8080/api/ready
