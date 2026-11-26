@@ -84,7 +84,13 @@ TEST_DATABASE_URL=postgresql://LOCAL_TEST_ROLE@127.0.0.1:5432/cloud_test \
 
 완료 통지가 유실되면 검증 서비스가 tusd의 `.info` 파일과 저장된 파일 크기를 확인해 완료를 복구합니다. 재시작 시에도 같은 방식으로 처리하며, 중복 통지는 이미 처리한 상태를 바꾸지 않습니다. 완료가 확인된 파일의 종류나 크기가 예상과 다르면 `failed`로 전환하고, 스토리지 읽기 오류가 나면 다음 검사에서 다시 시도합니다.
 
-`scripts/test-tus-local.py`는 `COMPOSE_PROJECT_NAME`이 `cloud-tus-test-`로 시작하는 별도의 Compose 스택에서 실행합니다. 프로젝트와 웹 포트 설정을 해당 스택과 동일하게 지정합니다. 두 개의 시험 세션으로 권한, 실제 tusd 파일의 SHA-256, 완료 통지 중복·유실과 재시작 후 복구, 잘린 파일의 실패 처리를 확인한 뒤 시험 계정을 정리합니다.
+`scripts/test-tus-local.py`는 `COMPOSE_PROJECT_NAME`이 `cloud-tus-test-`로 시작하는 별도의 Compose 스택에서 실행합니다. 프로젝트와 웹 포트 설정을 해당 스택과 동일하게 지정합니다. 두 개의 시험 세션으로 권한, 실제 tusd 파일의 SHA-256, 완료 통지 중복·유실과 재시작 후 복구, 잘린 파일의 실패 처리, 다운로드 권한과 Range 응답을 확인한 뒤 시험 계정을 정리합니다.
+
+## 로컬 파일 다운로드
+
+`GET /api/files/{file_id}/content`는 로그인한 소유자의 `ready` 파일을 첨부로 전송합니다. `file_id`는 예약 응답의 파일 ID입니다. `HEAD`로 전송 헤더를 조회할 수 있고, `Range`에는 Nginx가 해당 바이트만 `206 Partial Content`로 반환합니다.
+
+Nginx는 tusd 볼륨을 읽기 전용으로 마운트합니다. Rust가 소유권과 파일 상태를 확인한 요청만 Nginx 내부 경로로 위임합니다. 미로그인은 `401`, 다른 계정·준비되지 않은 파일·내부 경로 직접 요청은 `404`입니다. 응답은 `Content-Disposition: attachment`에 UTF-8 원본 파일명과 ASCII 대체 이름을 담고, `Cache-Control: private, no-store`를 사용합니다.
 
 ## 환경변수
 

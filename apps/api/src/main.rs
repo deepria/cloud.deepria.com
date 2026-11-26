@@ -1,4 +1,5 @@
 mod auth;
+mod downloads;
 mod error;
 mod memos;
 mod tus;
@@ -113,6 +114,7 @@ fn router(state: AppState) -> Router {
     let protected = auth::protected_routes()
         .merge(memos::routes())
         .merge(uploads::routes())
+        .merge(downloads::routes())
         .merge(tus::protected_routes())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -164,7 +166,8 @@ async fn trace_request(mut request: Request, next: Next) -> Response {
     );
     response
         .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        .entry(header::CACHE_CONTROL)
+        .or_insert(HeaderValue::from_static("no-store"));
     tracing::info!(
         request_id = %request_id.0,
         %method,

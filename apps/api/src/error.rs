@@ -15,6 +15,7 @@ pub(crate) enum Error {
     TooLarge,
     RequestTooLarge,
     FileTooLarge,
+    FileMissing,
     ReservationConflict,
     UploadMissing,
     Unavailable,
@@ -55,6 +56,11 @@ impl Error {
                 Status::PAYLOAD_TOO_LARGE,
                 "file_too_large",
                 "파일 크기 제한을 초과했습니다.",
+            ),
+            Self::FileMissing => (
+                Status::NOT_FOUND,
+                "file_not_found",
+                "파일을 찾을 수 없습니다.",
             ),
             Self::ReservationConflict => (
                 Status::CONFLICT,

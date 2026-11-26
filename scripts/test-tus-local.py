@@ -10,7 +10,7 @@ import secrets
 import socket
 import subprocess
 import time
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 import uuid
 
 project = os.environ.get("COMPOSE_PROJECT_NAME", "")
@@ -56,11 +56,12 @@ def expect(actual, code):
     return headers, body
 
 
-def reserve(cookie, size):
-    body = json.dumps({"request_key": str(uuid.uuid4()), "original_name": "fixture.bin", "size_bytes": size})
+def reserve(cookie, size, name="fixture.bin"):
+    body = json.dumps({"request_key": str(uuid.uuid4()), "original_name": name, "size_bytes": size})
     _, result = expect(request("POST", "/api/files/uploads", body, cookie=cookie,
                                headers={"Content-Type": "application/json"}), 201)
-    return "/uploads/" + json.loads(result)["upload_id"]
+    reservation = json.loads(result)
+    return f"/uploads/{reservation['upload_id']}", f"/api/files/{reservation['file_id']}/content"
 
 
 def start(path, cookie, size=6):
@@ -170,6 +171,59 @@ def post_finish(path, token):
                             {"Content-Type": "application/json", "X-Deepria-Tus-Token": token})
 
 
+def check_download_headers(headers, name, fallback):
+    expected = f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(name, safe='')}"
+    assert headers["Content-Disposition"] == expected
+    assert headers["Content-Type"] == "application/octet-stream"
+    assert headers.get_all("Cache-Control") == ["private, no-store"]
+    assert headers["X-Content-Type-Options"] == "nosniff"
+    assert "X-Accel-Redirect" not in headers
+    assert "ETag" not in headers
+
+
+def check_download(content, upload, owner, other, name):
+    headers, body = expect(request("GET", content, cookie=owner), 200)
+    assert body == b"abcdef"
+    assert headers["Content-Length"] == "6"
+    assert headers["Accept-Ranges"] == "bytes"
+    fallback = '___ _Q4_ 100_.bin'
+    check_download_headers(headers, name, fallback)
+
+    head, body = expect(request("HEAD", content, cookie=owner), 200)
+    assert not body and head["Content-Length"] == "6"
+    check_download_headers(head, name, fallback)
+
+    ranges = {"Range": "bytes=1-3"}
+    partial, body = expect(request("GET", content, cookie=owner, headers=ranges), 206)
+    assert body == b"bcd" and partial["Content-Length"] == "3"
+    assert partial["Content-Range"] == "bytes 1-3/6"
+    check_download_headers(partial, name, fallback)
+
+    suffix, body = expect(request("GET", content, cookie=owner,
+                                  headers={"Range": "bytes=-2"}), 206)
+    assert suffix["Content-Range"] == "bytes 4-5/6" and body == b"ef"
+    rejected, _ = expect(request("GET", content, cookie=owner,
+                                 headers={"Range": "bytes=6-9"}), 416)
+    assert rejected["Content-Range"] == "bytes */6"
+    assert rejected.get_all("Cache-Control") == ["private, no-store"]
+
+    _, body = expect(request("GET", content, cookie=owner,
+                             headers={"If-Modified-Since": headers["Last-Modified"]}), 200)
+    assert body == b"abcdef"
+
+    internal = upload.replace("/uploads/", "/_protected/files/")
+    for method in ("GET", "HEAD"):
+        expect(request(method, content, headers=ranges), 401)
+        for request_headers in ({}, ranges):
+            forbidden, _ = expect(request(method, content, cookie=other,
+                                          headers=request_headers), 404)
+            assert "Content-Disposition" not in forbidden
+            for cookie in ("", owner, other):
+                expect(request(method, internal, cookie=cookie, headers=request_headers), 404)
+    expect(request("GET", internal + ".info", cookie=owner), 404)
+    expect(request("GET", f"/api/files/{uuid.uuid4()}/content", cookie=owner), 404)
+
+
 users = [str(uuid.uuid4()) for _ in range(2)]
 cookies = [secrets.token_urlsafe(32) for _ in users]
 sql("BEGIN; " + " ".join(
@@ -182,7 +236,8 @@ sql("BEGIN; " + " ".join(
 
 try:
     a, b = cookies
-    path = reserve(a, 6)
+    name = '보고서 "Q4" 100%.bin'
+    path, content = reserve(a, 6, name)
     denied(path, "", 401)
     denied(path, b, 404)
     expect(request("POST", path, cookie=a, headers=start_headers,
@@ -215,6 +270,7 @@ try:
     assert append(path, a, 3, b"def")["Upload-Offset"] == "6"
     offset(path, a, 6)
     wait_for_verification(path, "ready", b"abcdef")
+    check_download(content, path, a, b, name)
     start(path, a)
     offset(path, a, 6)
     denied(path, b, 404)
@@ -222,18 +278,25 @@ try:
     expect(request("DELETE", path, cookie=a, headers=version), 409)
 
     payload = b"abcdef" * 32768
-    large = reserve(a, len(payload))
+    large, large_content = reserve(a, len(payload), "large file.bin")
     start(large, a, len(payload))
     assert append(large, a, 0, payload)["Upload-Offset"] == str(len(payload))
     wait_for_verification(large, "ready", payload)
+    headers, downloaded = expect(request("GET", large_content, cookie=a), 200)
+    check_download_headers(headers, "large file.bin", "large file.bin")
+    assert downloaded == payload
 
-    empty = reserve(a, 0)
+    long_name = "😀" * 251 + ".bin"
+    empty, empty_content = reserve(a, 0, long_name)
     start(empty, a, 0)
     wait_for_verification(empty, "ready", b"")
+    headers, body = expect(request("GET", empty_content, cookie=a), 200)
+    check_download_headers(headers, long_name, "_" * 251 + ".bin")
+    assert not body and headers["Content-Length"] == "0"
 
     token = command("exec", "-T", "api", "printenv", "TUS_INTERNAL_TOKEN").strip()
     command("stop", "verify-uploads")
-    interrupted = reserve(a, 6)
+    interrupted, cancelled_content = reserve(a, 6)
     start(interrupted, a)
     interrupt_chunk(interrupted, a)
     offset(interrupted, a, 3)
@@ -248,8 +311,9 @@ try:
     expect(request("POST", interrupted, cookie=a, headers=start_headers), 404)
     append(interrupted, a, 6, b"xyz", status=404)
     assert post_finish(interrupted, token) == 200
+    expect(request("GET", cancelled_content, cookie=a), 404)
 
-    duplicate = reserve(a, 6)
+    duplicate, verifying_content = reserve(a, 6)
     start(duplicate, a)
     append(duplicate, a, 0, b"abc")
     assert post_finish(duplicate, "invalid") == 403
@@ -257,29 +321,32 @@ try:
     # A real tusd hook is the only completion signal received by the API.
     finish_on_tusd(duplicate, token)
     wait_for_verification(duplicate, "verifying")
+    expect(request("GET", verifying_content, cookie=a), 404)
     assert post_finish(duplicate, token) == 200
     assert post_finish(duplicate, token) == 200
     assert verification(duplicate) == ("verifying", "")
 
-    missed = reserve(a, 6)
+    missed, _ = reserve(a, 6)
     start(missed, a)
     append(missed, a, 0, b"abc")
     # No gateway PATCH response is observed, and tusd's hook has no token.
     finish_on_tusd(missed)
     assert verification(missed) == ("uploading", "")
 
-    truncated = reserve(a, 6)
+    truncated, failed_content = reserve(a, 6)
     start(truncated, a)
     append(truncated, a, 0, b"abcdef")
     assert verification(truncated) == ("verifying", "")
     truncated_id = truncated.rsplit("/", 1)[-1]
     command("exec", "-T", "tusd", "truncate", "-s", "5", f"/srv/tusd-data/{truncated_id}")
 
-    incomplete = reserve(a, 6)
+    incomplete, uploading_content = reserve(a, 6)
     start(incomplete, a)
     append(incomplete, a, 0, b"abc")
+    expect(request("GET", uploading_content, cookie=a), 404)
 
-    unstarted = reserve(b, 6)
+    unstarted, pending_content = reserve(b, 6)
+    expect(request("GET", pending_content, cookie=b), 404)
     expect(request("DELETE", unstarted, cookie=b, headers=version), 204)
     expect(request("POST", unstarted, cookie=b, headers=start_headers), 404)
 
@@ -299,15 +366,22 @@ try:
     # Nginx can retain the old API address until its DNS cache expires.
     for _ in range(30):
         result = request("HEAD", missed, cookie=a, headers=version)
-        if result[0] == 200:
+        if result[0] == 200 and request("GET", "/api/ready")[0] == 200:
             break
         time.sleep(0.5)
     headers, _ = expect(result, 200)
     assert headers["Upload-Offset"] == "6"
+    expect(request("GET", "/api/ready"), 200)
+    expect(request("GET", failed_content, cookie=a), 404)
+
+    file_id = content.split("/")[3]
+    sql(f"UPDATE app.files SET status = 'deleting' WHERE id = '{file_id}';")
+    expect(request("GET", content, cookie=a), 404)
 
     print("tusd gateway OK: ownership, resume after restart/disconnect, and cancellation")
     print("Upload verification OK: SHA-256, empty files, truncated files, duplicate and missing "
           "completion signals after restart")
+    print("Private downloads OK: GET/HEAD, Range/206/416, filename and cache headers, access control")
 finally:
     ids = ", ".join(f"'{uid}'" for uid in users)
     sql(f"DELETE FROM app.users WHERE id IN ({ids});")
