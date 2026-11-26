@@ -1,3 +1,6 @@
+#[path = "upload_reservation_tests.rs"]
+mod upload_reservation_tests;
+
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -292,6 +295,10 @@ async fn oauth_sessions_and_memos_postgres() {
     )
     .await;
     assert_eq!(me["id"], account_a.to_string());
+    upload_reservation_tests::verify_upload_reservations(
+        &browser, &db, &a, account_a, &b, account_b,
+    )
+    .await;
 
     let (path, binder, _) = browser.attempt(9999).await;
     let denial = browser.call(Method::GET, &path, &binder, None, None).await;

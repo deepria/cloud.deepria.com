@@ -13,6 +13,9 @@ pub(crate) enum Error {
     Conflict,
     Invalid,
     TooLarge,
+    RequestTooLarge,
+    FileTooLarge,
+    ReservationConflict,
     Unavailable,
 }
 
@@ -41,6 +44,21 @@ impl Error {
                 Status::PAYLOAD_TOO_LARGE,
                 "too_large",
                 "메모가 너무 큽니다.",
+            ),
+            Self::RequestTooLarge => (
+                Status::PAYLOAD_TOO_LARGE,
+                "request_too_large",
+                "요청 본문이 너무 큽니다.",
+            ),
+            Self::FileTooLarge => (
+                Status::PAYLOAD_TOO_LARGE,
+                "file_too_large",
+                "파일 크기 제한을 초과했습니다.",
+            ),
+            Self::ReservationConflict => (
+                Status::CONFLICT,
+                "reservation_conflict",
+                "같은 요청 키에 다른 업로드 예약이 있습니다.",
             ),
             Self::Unavailable => (
                 Status::SERVICE_UNAVAILABLE,

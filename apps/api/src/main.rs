@@ -1,6 +1,7 @@
 mod auth;
 mod error;
 mod memos;
+mod uploads;
 
 use std::{env, net::SocketAddr, process::ExitCode, time::Duration};
 
@@ -102,9 +103,13 @@ async fn serve() -> Result<(), &'static str> {
 }
 
 fn router(state: AppState) -> Router {
-    let protected = auth::protected_routes().merge(memos::routes()).route_layer(
-        middleware::from_fn_with_state(state.clone(), auth::require_user),
-    );
+    let protected = auth::protected_routes()
+        .merge(memos::routes())
+        .merge(uploads::routes())
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_user,
+        ));
     Router::new()
         .merge(auth::public_routes())
         .merge(protected)
