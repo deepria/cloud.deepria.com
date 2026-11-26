@@ -1,3 +1,7 @@
+mod auth;
+mod error;
+mod memos;
+
 use std::{env, net::SocketAddr, process::ExitCode, time::Duration};
 
 use axum::{
@@ -15,14 +19,24 @@ use uuid::Uuid;
 static MIGRATIONS: Migrator = sqlx::migrate!("../../db/migrations");
 const DB_TIMEOUT: Duration = Duration::from_secs(2);
 
+#[derive(Clone)]
+struct AppState {
+    db: PgPool,
+    auth: auth::Auth,
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     tracing_subscriber::fmt().json().with_target(false).init();
 
-    let result = match env::args().nth(1).as_deref() {
-        None => serve().await,
-        Some("migrate") => migrate().await,
-        Some(_) => Err("unknown command; expected migrate or no arguments"),
+    let args: Vec<String> = env::args().skip(1).collect();
+    let result = match args.as_slice() {
+        [] => serve().await,
+        [command] if command == "migrate" => migrate().await,
+        [command, subject, display_name] if command == "provision-github" => {
+            provision_github(subject, display_name).await
+        }
+        _ => Err("expected no arguments, migrate, or provision-github <numeric-id> <display-name>"),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -60,6 +74,15 @@ async fn migrate() -> Result<(), &'static str> {
     Ok(())
 }
 
+async fn provision_github(subject: &str, display_name: &str) -> Result<(), &'static str> {
+    let db = database_pool("DATABASE_URL", 1)?;
+    let user_id = auth::provision_github(&db, subject, display_name)
+        .await
+        .map_err(|_| "could not provision GitHub identity; check numeric ID, name and database")?;
+    println!("{user_id}");
+    Ok(())
+}
+
 async fn serve() -> Result<(), &'static str> {
     let bind: SocketAddr = env::var("API_BIND")
         .unwrap_or_else(|_| "127.0.0.1:3000".into())
@@ -71,14 +94,20 @@ async fn serve() -> Result<(), &'static str> {
         .map_err(|_| "could not bind HTTP listener")?;
 
     tracing::info!(%bind, "HTTP listener started");
-    axum::serve(listener, router(db))
+    let auth = auth::Auth::from_env()?;
+    axum::serve(listener, router(AppState { db, auth }))
         .with_graceful_shutdown(shutdown())
         .await
         .map_err(|_| "HTTP server failed")
 }
 
-fn router(db: PgPool) -> Router {
+fn router(state: AppState) -> Router {
+    let protected = auth::protected_routes().merge(memos::routes()).route_layer(
+        middleware::from_fn_with_state(state.clone(), auth::require_user),
+    );
     Router::new()
+        .merge(auth::public_routes())
+        .merge(protected)
         .route("/health", get(health))
         .route("/ready", get(ready))
         .route("/api/health", get(health))
@@ -86,7 +115,7 @@ fn router(db: PgPool) -> Router {
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .layer(middleware::from_fn(trace_request))
-        .with_state(db)
+        .with_state(state)
 }
 
 async fn shutdown() {
@@ -142,9 +171,9 @@ async fn health() -> Json<ServiceStatus> {
     Json(ServiceStatus { status: "ok" })
 }
 
-async fn ready(State(db): State<PgPool>, Extension(id): Extension<RequestId>) -> Response {
+async fn ready(State(state): State<AppState>, Extension(id): Extension<RequestId>) -> Response {
     if matches!(
-        tokio::time::timeout(DB_TIMEOUT, schema_is_current(&db)).await,
+        tokio::time::timeout(DB_TIMEOUT, schema_is_current(&state.db)).await,
         Ok(Ok(true))
     ) {
         return Json(ServiceStatus { status: "ready" }).into_response();
@@ -242,7 +271,10 @@ mod tests {
         let db = PgPoolOptions::new()
             .connect_lazy("postgres://127.0.0.1/cloud_test")
             .unwrap();
-        let app = router(db);
+        let app = router(AppState {
+            db,
+            auth: auth::Auth::new("http://127.0.0.1:8080".into()).unwrap(),
+        });
 
         for (method, path, status) in [
             ("GET", "/health", StatusCode::OK),

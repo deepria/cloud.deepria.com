@@ -6,12 +6,20 @@ publish = false
 
 [dependencies]
 axum = "0.8"
+base64 = "0.22"
+cookie = "0.18"
+getrandom = "0.4"
+oauth2 = { version = "5", default-features = false, features = ["reqwest"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json"] }
+sha2 = "0.11"
 serde = { version = "1", features = ["derive"] }
-sqlx = { version = "0.9.1", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring-native-roots", "migrate", "macros"] }
+sqlx = { version = "0.9.1", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring-native-roots", "migrate", "macros", "uuid", "time"] }
+time = { version = "0.3", features = ["serde-well-known"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json"] }
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+serde_json = "1"
