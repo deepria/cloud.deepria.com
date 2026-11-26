@@ -6,10 +6,13 @@
 
 Docker와 Compose가 필요합니다. macOS에서 Colima를 사용하는 경우 시작한 Docker 컨텍스트를 선택합니다. 이 작업용 Colima 컨텍스트를 직접 지정하려면 각 명령의 `docker` 뒤에 `--context colima-deepria-cloud`를 붙입니다. Homebrew의 Compose와 Buildx가 Docker에 표시되지 않으면 Docker 설정에 `/opt/homebrew/lib/docker/cli-plugins`를 플러그인 디렉터리로 추가합니다.
 
-처음 한 번 프로젝트 루트에서 빈 `.env.example`을 참고해 로컬 DB 비밀번호를 생성합니다. 기존 `.env`가 있으면 해당 파일을 그대로 사용합니다.
+처음 한 번 프로젝트 루트에서 빈 `.env.example`을 참고해 로컬 DB 비밀번호를 생성합니다. 기존 `.env`가 있으면 DB 비밀번호를 유지하고 새 `TUS_INTERNAL_TOKEN`에 별도로 생성한 hex 값을 추가합니다.
 
 ```sh
-(umask 077 && set -C && printf 'LOCAL_DB_PASSWORD=%s\n' "$(openssl rand -hex 24)" > .env)
+(umask 077 && set -C && {
+  printf 'LOCAL_DB_PASSWORD=%s\n' "$(openssl rand -hex 24)"
+  printf 'TUS_INTERNAL_TOKEN=%s\n' "$(openssl rand -hex 24)"
+} > .env)
 docker compose up --build -d --wait
 ```
 
@@ -66,6 +69,21 @@ TEST_DATABASE_URL=postgresql://LOCAL_TEST_ROLE@127.0.0.1:5432/cloud_test \
   cargo test --locked oauth_sessions_and_memos_postgres -- --ignored
 ```
 
+## 로컬 업로드 API
+
+로그인과 동일한 origin에서 `POST /api/files/uploads`에 `request_key`, `original_name`, `size_bytes`를 보내면 `upload_id`를 받습니다. 업로드 경로는 `/uploads/{upload_id}`입니다.
+
+| 요청 | 입력 및 성공 결과 |
+| --- | --- |
+| POST | `Tus-Resumable: 1.0.0`, 예약 크기와 동일한 `Upload-Length`, 빈 본문. 201과 `Location` |
+| HEAD | `Tus-Resumable: 1.0.0`. `Upload-Offset`과 `Upload-Length` 조회 |
+| PATCH | `Tus-Resumable: 1.0.0`, `Upload-Offset`, `Content-Type: application/offset+octet-stream`. 한 요청 최대 16 MiB |
+| DELETE | `Tus-Resumable: 1.0.0`, 빈 본문. 204와 예약 취소 |
+
+쓰기 요청은 같은 origin의 `Origin` 헤더와 세션 쿠키를 사용합니다. 파일 바이트가 모두 도착하면 상태는 `verifying`입니다. 로컬 Compose의 tusd는 내부 네트워크에 있고 업로드 본문은 로컬 Docker 볼륨에 저장합니다.
+
+`scripts/test-tus-local.py`는 `COMPOSE_PROJECT_NAME`이 `cloud-tus-test-`로 시작하는 별도의 Compose 스택에서 실행합니다. 프로젝트와 웹 포트 설정을 해당 스택과 동일하게 지정합니다. 두 개의 시험 세션을 생성해 권한과 실제 tusd 파일 전송을 확인한 뒤 시험 계정을 정리합니다.
+
 ## 환경변수
 
 | 설정 | 사용처 |
@@ -76,6 +94,8 @@ TEST_DATABASE_URL=postgresql://LOCAL_TEST_ROLE@127.0.0.1:5432/cloud_test \
 | `MIGRATION_DATABASE_URL` | `cloud-api migrate` 명령의 필수 PostgreSQL 연결 값. 별도 마이그레이션 역할 사용 |
 | `PUBLIC_ORIGIN` | 브라우저 주소. 끝 슬래시 없이 지정. Compose 기본값은 WEB_PORT를 반영 |
 | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | 이 환경 전용 GitHub OAuth App. HTTPS 시작 시 둘 다 필요 |
+| `TUS_UPSTREAM_URL` | Rust에서만 접근하는 tusd URL. 로컬 Compose에서 지정 |
+| `TUS_INTERNAL_TOKEN` | Rust와 tusd 사이의 업로드 생성 확인용 hex 비밀값 |
 | `CLOUD_API_PROXY` | Vite 로컬 프록시 주소. 기본값 `http://127.0.0.1:8080` |
 | `API_BIND` | API 소켓 주소. 기본값 `127.0.0.1:3000`, 컨테이너 기본값 `0.0.0.0:3000` |
 

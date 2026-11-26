@@ -67,6 +67,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DOCKER_DEFAULT_PLATFORM: linux/amd64
+      COMPOSE_PROJECT_NAME: cloud-tus-test-ci
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -74,6 +75,7 @@ jobs:
       - name: Build and start the isolated stack
         run: |
           printf 'LOCAL_DB_PASSWORD=%s\n' "$(openssl rand -hex 24)" > .env
+          printf 'TUS_INTERNAL_TOKEN=%s\n' "$(openssl rand -hex 24)" >> .env
           docker compose build
           docker compose up -d --wait
       - name: Verify running image architectures
@@ -94,6 +96,8 @@ jobs:
           docker compose start db
           curl -fsS --retry 12 --retry-all-errors --retry-delay 2 http://127.0.0.1:8080/api/ready
           scripts/smoke.sh
+      - name: Test upload gateway with tusd
+        run: python3 scripts/test-tus-local.py
       - name: Collect logs
         if: failure()
         run: docker compose logs --tail 80

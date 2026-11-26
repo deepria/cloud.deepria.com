@@ -16,6 +16,7 @@ pub(crate) enum Error {
     RequestTooLarge,
     FileTooLarge,
     ReservationConflict,
+    UploadMissing,
     Unavailable,
 }
 
@@ -59,6 +60,11 @@ impl Error {
                 Status::CONFLICT,
                 "reservation_conflict",
                 "같은 요청 키에 다른 업로드 예약이 있습니다.",
+            ),
+            Self::UploadMissing => (
+                Status::NOT_FOUND,
+                "upload_not_found",
+                "업로드를 찾을 수 없습니다.",
             ),
             Self::Unavailable => (
                 Status::SERVICE_UNAVAILABLE,

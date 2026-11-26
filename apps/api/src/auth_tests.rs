@@ -226,6 +226,7 @@ async fn oauth_sessions_and_memos_postgres() {
         app: router(AppState {
             db: db.clone(),
             auth,
+            tus: None,
         }),
         provider,
     };

@@ -8,6 +8,7 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/api': process.env.CLOUD_API_PROXY ?? 'http://127.0.0.1:8080',
+      '/uploads/': process.env.CLOUD_API_PROXY ?? 'http://127.0.0.1:8080',
     },
   },
 })

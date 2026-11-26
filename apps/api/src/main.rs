@@ -1,6 +1,7 @@
 mod auth;
 mod error;
 mod memos;
+mod tus;
 mod uploads;
 
 use std::{env, net::SocketAddr, process::ExitCode, time::Duration};
@@ -24,6 +25,7 @@ const DB_TIMEOUT: Duration = Duration::from_secs(2);
 struct AppState {
     db: PgPool,
     auth: auth::Auth,
+    tus: Option<tus::Gateway>,
 }
 
 #[tokio::main]
@@ -96,7 +98,8 @@ async fn serve() -> Result<(), &'static str> {
 
     tracing::info!(%bind, "HTTP listener started");
     let auth = auth::Auth::from_env()?;
-    axum::serve(listener, router(AppState { db, auth }))
+    let tus = tus::Gateway::from_env()?;
+    axum::serve(listener, router(AppState { db, auth, tus }))
         .with_graceful_shutdown(shutdown())
         .await
         .map_err(|_| "HTTP server failed")
@@ -106,12 +109,14 @@ fn router(state: AppState) -> Router {
     let protected = auth::protected_routes()
         .merge(memos::routes())
         .merge(uploads::routes())
+        .merge(tus::protected_routes())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_user,
         ));
     Router::new()
         .merge(auth::public_routes())
+        .merge(tus::internal_routes())
         .merge(protected)
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -279,6 +284,7 @@ mod tests {
         let app = router(AppState {
             db,
             auth: auth::Auth::new("http://127.0.0.1:8080".into()).unwrap(),
+            tus: None,
         });
 
         for (method, path, status) in [

@@ -36,9 +36,32 @@ services:
       PUBLIC_ORIGIN: "${PUBLIC_ORIGIN:-http://127.0.0.1:${WEB_PORT:-8080}}"
       GITHUB_OAUTH_CLIENT_ID: "${GITHUB_OAUTH_CLIENT_ID:-}"
       GITHUB_OAUTH_CLIENT_SECRET: "${GITHUB_OAUTH_CLIENT_SECRET:-}"
+      TUS_UPSTREAM_URL: http://tusd:8080/files/
+      TUS_INTERNAL_TOKEN: "${TUS_INTERNAL_TOKEN:?set a random hex token in .env}"
+    networks:
+      - default
+      - transfer
     depends_on:
       migrate:
         condition: service_completed_successfully
+
+  tusd:
+    image: tusproject/tusd:v2.10.1@sha256:7b1c552a8b42f4b36cb01f2a3bd49f82ab078b2eefd191459e716141dd50376c
+    entrypoint: ["/usr/local/bin/tusd"]
+    command:
+      - -upload-dir=/srv/tusd-data
+      - -base-path=/files/
+      - -disable-download
+      - -disable-cors
+      - -max-size=10737418240
+      - -hooks-http=http://api:3000/internal/tusd
+      - -hooks-enabled-events=pre-create
+      - -hooks-http-forward-headers=X-Deepria-Tus-Token
+      - -hooks-http-retry=0
+    volumes:
+      - uploads-data:/srv/tusd-data
+    networks:
+      - transfer
 
   web:
     build:
@@ -50,5 +73,10 @@ services:
       api:
         condition: service_started
 
+networks:
+  transfer:
+    internal: true
+
 volumes:
   db-data:
+  uploads-data:
