@@ -2,6 +2,7 @@ mod auth;
 mod error;
 mod memos;
 mod tus;
+mod upload_verification;
 mod uploads;
 
 use std::{env, net::SocketAddr, process::ExitCode, time::Duration};
@@ -36,10 +37,13 @@ async fn main() -> ExitCode {
     let result = match args.as_slice() {
         [] => serve().await,
         [command] if command == "migrate" => migrate().await,
+        [command] if command == "verify-uploads" => upload_verification::run().await,
         [command, subject, display_name] if command == "provision-github" => {
             provision_github(subject, display_name).await
         }
-        _ => Err("expected no arguments, migrate, or provision-github <numeric-id> <display-name>"),
+        _ => Err(
+            "expected no arguments, migrate, verify-uploads, or provision-github <numeric-id> <display-name>",
+        ),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

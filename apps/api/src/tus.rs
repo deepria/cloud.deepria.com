@@ -28,6 +28,7 @@ use crate::{
     AppState,
     auth::User,
     error::{Context, Error, ResultResponse},
+    upload_verification,
     uploads::MAX_FILE_SIZE,
 };
 
@@ -153,21 +154,25 @@ struct HookEvent {
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct HookUpload {
+    #[serde(rename = "ID")]
+    id: Option<String>,
+    offset: Option<i64>,
     size: i64,
     size_is_deferred: bool,
     #[serde(rename = "MetaData")]
-    metadata: HookMetadata,
+    metadata: Option<HookMetadata>,
 }
 
 #[derive(Deserialize)]
 struct HookMetadata {
-    reservation: Uuid,
+    reservation: Option<Uuid>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
 struct HookResponse {
-    change_file_info: HookFileInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    change_file_info: Option<HookFileInfo>,
 }
 
 #[derive(Serialize)]
@@ -192,15 +197,34 @@ async fn hook(
         return Err(ctx.fail(Error::Forbidden));
     }
     let Json(input) = input.map_err(|error| ctx.fail(error))?;
-    if input.kind != "pre-create"
-        || input.event.upload.size_is_deferred
-        || !(0..=MAX_FILE_SIZE).contains(&input.event.upload.size)
-        || input.event.upload.metadata.reservation.is_nil()
-    {
+    let upload = input.event.upload;
+    if upload.size_is_deferred || !(0..=MAX_FILE_SIZE).contains(&upload.size) {
         return Err(ctx.fail(Error::Invalid));
     }
-
-    let id = input.event.upload.metadata.reservation;
+    if input.kind == "post-finish" {
+        let id = upload
+            .id
+            .as_deref()
+            .and_then(|id| Uuid::parse_str(id).ok())
+            .filter(|id| !id.is_nil())
+            .filter(|_| upload.offset == Some(upload.size))
+            .ok_or_else(|| ctx.fail(Error::Invalid))?;
+        upload_verification::observe(&state.db, id, upload.size)
+            .await
+            .map_err(|e| ctx.fail(e))?;
+        return Ok(Json(HookResponse {
+            change_file_info: None,
+        })
+        .into_response());
+    }
+    if input.kind != "pre-create" {
+        return Err(ctx.fail(Error::Invalid));
+    }
+    let id = upload
+        .metadata
+        .and_then(|metadata| metadata.reservation)
+        .filter(|id| !id.is_nil())
+        .ok_or_else(|| ctx.fail(Error::Invalid))?;
     // tusd truncates a file when a custom ID is created twice. Claim it once,
     // even if the first request loses its response before the gateway commits.
     let claimed = sqlx::query(
@@ -209,7 +233,7 @@ async fn hook(
            AND f.status = 'pending' AND f.size_bytes = $2",
     )
     .bind(id)
-    .bind(input.event.upload.size)
+    .bind(upload.size)
     .execute(&state.db)
     .await
     .map_err(|e| ctx.fail(e))?;
@@ -218,10 +242,10 @@ async fn hook(
     }
 
     Ok(Json(HookResponse {
-        change_file_info: HookFileInfo {
+        change_file_info: Some(HookFileInfo {
             id,
             metadata: std::collections::BTreeMap::new(),
-        },
+        }),
     })
     .into_response())
 }
@@ -348,7 +372,7 @@ async fn start(
     }
     if !matches!(
         reservation.status.as_str(),
-        "pending" | "uploading" | "verifying"
+        "pending" | "uploading" | "verifying" | "ready"
     ) {
         return Err(ctx.fail(Error::ReservationConflict));
     }
@@ -356,6 +380,9 @@ async fn start(
         return Err(ctx.fail(Error::ReservationConflict));
     }
 
+    if reservation.status == "ready" {
+        return Ok(started(id));
+    }
     let found = gateway.check(id).await.map_err(|e| ctx.fail(e))?;
     let offset = match found.status() {
         StatusCode::OK | StatusCode::NO_CONTENT
@@ -386,7 +413,7 @@ async fn start(
         _ => return Err(ctx.fail(Error::Unavailable)),
     };
 
-    let status = if offset == length {
+    let status = if offset == length || reservation.status == "verifying" {
         "verifying"
     } else {
         "uploading"
@@ -395,7 +422,11 @@ async fn start(
         .bind(status).bind(id).execute(&mut *tx).await.map_err(|e| ctx.fail(e))?;
     tx.commit().await.map_err(|e| ctx.fail(e))?;
 
-    Ok((
+    Ok(started(id))
+}
+
+fn started(id: Uuid) -> Response {
+    (
         StatusCode::CREATED,
         [
             (header::LOCATION, format!("/uploads/{id}")),
@@ -405,7 +436,7 @@ async fn start(
             ),
         ],
     )
-        .into_response())
+        .into_response()
 }
 
 async fn inspect(
@@ -421,7 +452,10 @@ async fn inspect(
     let reservation = load(&state.db, owner.id, id)
         .await
         .map_err(|e| ctx.fail(e))?;
-    if !matches!(reservation.status.as_str(), "uploading" | "verifying") {
+    if !matches!(
+        reservation.status.as_str(),
+        "uploading" | "verifying" | "ready"
+    ) {
         return Err(ctx.fail(Error::UploadMissing));
     }
     let gateway = state
@@ -447,7 +481,10 @@ async fn append(
     let reservation = load(&state.db, owner.id, id)
         .await
         .map_err(|e| ctx.fail(e))?;
-    if !matches!(reservation.status.as_str(), "uploading" | "verifying") {
+    if !matches!(
+        reservation.status.as_str(),
+        "uploading" | "verifying" | "ready"
+    ) {
         return Err(ctx.fail(Error::UploadMissing));
     }
     if unique_header(headers, "content-type").map_err(|e| ctx.fail(e))?
@@ -475,6 +512,7 @@ async fn append(
             Method::PATCH,
             gateway.item_url(id).map_err(|e| ctx.fail(e))?,
         )
+        .header(TOKEN_HEADER, gateway.token.clone())
         .header("upload-offset", offset)
         .header(header::CONTENT_TYPE, PATCH_TYPE);
     if let Some(length) = length {
@@ -507,14 +545,9 @@ async fn observe_completion(
             .flatten()
             == Some(reservation.size_bytes)
     {
-        sqlx::query(
-            "UPDATE app.files SET status = 'verifying' FROM app.uploads u
-             WHERE u.file_id = files.id AND u.id = $1 AND files.status = 'uploading'",
-        )
-        .bind(id)
-        .execute(db)
-        .await
-        .map_err(|e| ctx.fail(e))?;
+        upload_verification::observe(db, id, reservation.size_bytes)
+            .await
+            .map_err(|e| ctx.fail(e))?;
     }
     Ok(())
 }

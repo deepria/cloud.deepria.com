@@ -45,6 +45,20 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  verify-uploads:
+    image: cloud-deepria-api:local
+    command: ["verify-uploads"]
+    environment:
+      DATABASE_URL: "postgresql://cloud_dev:${LOCAL_DB_PASSWORD:?set a local hex password in .env}@db:5432/cloud_dev"
+      TUS_UPLOAD_DIR: /srv/tusd-data
+    volumes:
+      - uploads-data:/srv/tusd-data:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      tusd:
+        condition: service_started
+
   tusd:
     image: tusproject/tusd:v2.10.1@sha256:7b1c552a8b42f4b36cb01f2a3bd49f82ab078b2eefd191459e716141dd50376c
     entrypoint: ["/usr/local/bin/tusd"]
@@ -55,7 +69,7 @@ services:
       - -disable-cors
       - -max-size=10737418240
       - -hooks-http=http://api:3000/internal/tusd
-      - -hooks-enabled-events=pre-create
+      - -hooks-enabled-events=pre-create,post-finish
       - -hooks-http-forward-headers=X-Deepria-Tus-Token
       - -hooks-http-retry=0
     volumes:

@@ -78,11 +78,13 @@ TEST_DATABASE_URL=postgresql://LOCAL_TEST_ROLE@127.0.0.1:5432/cloud_test \
 | POST | `Tus-Resumable: 1.0.0`, 예약 크기와 동일한 `Upload-Length`, 빈 본문. 201과 `Location` |
 | HEAD | `Tus-Resumable: 1.0.0`. `Upload-Offset`과 `Upload-Length` 조회 |
 | PATCH | `Tus-Resumable: 1.0.0`, `Upload-Offset`, `Content-Type: application/offset+octet-stream`. 한 요청 최대 16 MiB |
-| DELETE | `Tus-Resumable: 1.0.0`, 빈 본문. 204와 예약 취소 |
+| DELETE | `Tus-Resumable: 1.0.0`, 빈 본문. 204와 예약 취소. `ready` 상태는 409 |
 
-쓰기 요청은 같은 origin의 `Origin` 헤더와 세션 쿠키를 사용합니다. 파일 바이트가 모두 도착하면 상태는 `verifying`입니다. 로컬 Compose의 tusd는 내부 네트워크에 있고 업로드 본문은 로컬 Docker 볼륨에 저장합니다.
+쓰기 요청은 같은 origin의 `Origin` 헤더와 세션 쿠키를 사용합니다. 전송이 끝나면 `verifying`으로 전환됩니다. 로컬 Compose의 `verify-uploads` 서비스는 tusd 볼륨을 읽기 전용으로 마운트합니다. 저장된 파일 크기를 확인하고 SHA-256을 스트리밍으로 계산한 뒤, 해시와 `ready` 상태를 PostgreSQL에 함께 저장합니다. 예약 요청을 같은 `request_key`와 입력으로 반복하면 현재 상태를 조회할 수 있습니다.
 
-`scripts/test-tus-local.py`는 `COMPOSE_PROJECT_NAME`이 `cloud-tus-test-`로 시작하는 별도의 Compose 스택에서 실행합니다. 프로젝트와 웹 포트 설정을 해당 스택과 동일하게 지정합니다. 두 개의 시험 세션을 생성해 권한과 실제 tusd 파일 전송을 확인한 뒤 시험 계정을 정리합니다.
+완료 통지가 유실되면 검증 서비스가 tusd의 `.info` 파일과 저장된 파일 크기를 확인해 완료를 복구합니다. 재시작 시에도 같은 방식으로 처리하며, 중복 통지는 이미 처리한 상태를 바꾸지 않습니다. 완료가 확인된 파일의 종류나 크기가 예상과 다르면 `failed`로 전환하고, 스토리지 읽기 오류가 나면 다음 검사에서 다시 시도합니다.
+
+`scripts/test-tus-local.py`는 `COMPOSE_PROJECT_NAME`이 `cloud-tus-test-`로 시작하는 별도의 Compose 스택에서 실행합니다. 프로젝트와 웹 포트 설정을 해당 스택과 동일하게 지정합니다. 두 개의 시험 세션으로 권한, 실제 tusd 파일의 SHA-256, 완료 통지 중복·유실과 재시작 후 복구, 잘린 파일의 실패 처리를 확인한 뒤 시험 계정을 정리합니다.
 
 ## 환경변수
 
@@ -95,7 +97,8 @@ TEST_DATABASE_URL=postgresql://LOCAL_TEST_ROLE@127.0.0.1:5432/cloud_test \
 | `PUBLIC_ORIGIN` | 브라우저 주소. 끝 슬래시 없이 지정. Compose 기본값은 WEB_PORT를 반영 |
 | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | 이 환경 전용 GitHub OAuth App. HTTPS 시작 시 둘 다 필요 |
 | `TUS_UPSTREAM_URL` | Rust에서만 접근하는 tusd URL. 로컬 Compose에서 지정 |
-| `TUS_INTERNAL_TOKEN` | Rust와 tusd 사이의 업로드 생성 확인용 hex 비밀값 |
+| `TUS_INTERNAL_TOKEN` | Rust와 tusd 사이의 업로드 생성·완료 통지 확인용 hex 비밀값 |
+| `TUS_UPLOAD_DIR` | `verify-uploads` 서비스가 읽는 tusd FileStore 볼륨의 절대 경로 |
 | `CLOUD_API_PROXY` | Vite 로컬 프록시 주소. 기본값 `http://127.0.0.1:8080` |
 | `API_BIND` | API 소켓 주소. 기본값 `127.0.0.1:3000`, 컨테이너 기본값 `0.0.0.0:3000` |
 
