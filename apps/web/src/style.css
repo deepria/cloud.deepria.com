@@ -1,0 +1,39 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color: #222b2a;
+  background: #f6f8f7;
+  line-height: 1.6;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  max-width: 36rem;
+  margin: 12vh auto 0;
+  padding: 1.5rem;
+}
+
+h1 {
+  line-height: 1.15;
+}
+
+button {
+  font: inherit;
+  padding: 0.5rem 0.9rem;
+  border: 1px solid #315c50;
+  border-radius: 0.4rem;
+  background: #315c50;
+  color: white;
+  cursor: pointer;
+}
+
+button:disabled {
+  background: #526461;
+  cursor: wait;
+}
+
+a {
+  color: #315c50;
+}
